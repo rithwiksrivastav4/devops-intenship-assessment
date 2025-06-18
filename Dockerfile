@@ -1,33 +1,41 @@
-# -------- Stage 1: Build --------
-FROM python:3.11-slim as builder
+# ---- Base image with Python ----
+FROM python:3.12-slim-bookworm AS base
 
-# Set working directory
+# ---- Builder image: install uv and dependencies ----
+FROM base AS builder
+
+# Copy uv binary from official uv image
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /bin/uv
+
+# Set environment variables for uv
+ENV UV_COMPILE_BYTECODE=1 UV_LINK_MODE=copy
+
 WORKDIR /app
 
-# Install build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential \
-    && rm -rf /var/lib/apt/lists/*
+# Copy dependency files first for better cache utilization
+COPY pyproject.toml uv.lock ./
 
-# Copy requirements and install into a temp dir
-COPY requirements.txt .
-RUN pip install --upgrade pip && \
-    pip install --prefix=/install -r requirements.txt
+# Install dependencies (excluding project code for cache efficiency)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-install-project --no-dev
 
-# -------- Stage 2: Run --------
-FROM python:3.11-slim
-
-# Set working directory
-WORKDIR /app
-
-# Copy only installed dependencies from builder
-COPY --from=builder /install /usr/local
-
-# Copy app source code
+# Copy the rest of the application code
 COPY . .
 
-# Expose port
+# Install project dependencies (including app code)
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev
+
+# ---- Final image: runtime only ----
+FROM base
+
+WORKDIR /app
+
+# Copy installed app and dependencies from builder
+COPY --from=builder /app /app
+
+# Expose FastAPI default port
 EXPOSE 8000
 
-# Command to run the FastAPI app
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# Run the FastAPI app using uv (adjust server.py and app object as needed)
+CMD ["uv", "run", "fastapi", "run", "server.py"]
